@@ -1,0 +1,11 @@
+[user]
+	email = juancholoco2000.61@gmail.com
+	name = Juferoga
+[core]
+	pager = delta
+	hooksPath = /home/juferoga/.git-hooks
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true
+	side-by-side = true

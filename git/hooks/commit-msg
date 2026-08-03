@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Hook GLOBAL (core.hooksPath): elimina cualquier atribución a Claude/Anthropic
+# del mensaje de commit en todos los repos. Garantiza que los commits queden
+# únicamente a nombre del autor.
+python3 - "$1" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    lines = f.read().splitlines()
+
+out = []
+for ln in lines:
+    low = ln.lower()
+    if low.startswith("co-authored-by:") and ("claude" in low or "anthropic" in low):
+        continue
+    if "generated with" in low and "claude" in low:
+        continue
+    if "🤖" in ln and "claude" in low:
+        continue
+    out.append(ln)
+
+while out and out[-1].strip() == "":
+    out.pop()
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write("\n".join(out) + "\n")
+PY
