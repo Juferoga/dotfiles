@@ -91,10 +91,10 @@ GHOST
 # Header principal (reemplaza el bloque ASCII horrible)
 GHOST_HEADER=$(cat << 'GHOST'
 
-  ⠀⠀⠄⠀⠀⠂⠀⠀⠀⡀⠀⠀                         ⠀⠀⠄⠀⠀⠂⠀⠀⠀⡀⠀⠀
-  ⠁⠀⠀⣠⣶⣿⣷⣶⣄⠀⠀⠁   dotfiles bootstrap   ⠁⠀⠀⣠⣶⣿⣷⣶⣄⠀⠀⠁
-  ⠈⠀⢰⡿⠛⢿⡿⠻⣿⡆⠀⡀      by Juferoga       ⠈⠀⢰⡿⠛⢿⡿⠻⣿⡆⠀⡀
-  ⠀⠠⣾⡇⠀⢸⡇⠀⢸⣧⠀⠀   Ubuntu 26.04 LTS    ⠀⠠⣾⡇⠀⢸⡇⠀⢸⣧⠀⠀
+  ⠀⠀⠄⠀⠀⠂⠀⠀⠀⡀⠀⠀                          ⠀⠀⠄⠀⠀⠂⠀⠀⠀⡀⠀⠀
+  ⠁⠀⠀⣠⣶⣿⣷⣶⣄⠀⠀⠁   dotfiles bootstrap    ⠁⠀⠀⣠⣶⣿⣷⣶⣄⠀⠀⠁
+  ⠈⠀⢰⡿⠛⢿⡿⠻⣿⡆⠀⡀      by Juferoga        ⠈⠀⢰⡿⠛⢿⡿⠻⣿⡆⠀⡀
+  ⠀⠠⣾⡇⠀⢸⡇⠀⢸⣧⠀⠀   Ubuntu 26.04 LTS      ⠀⠠⣾⡇⠀⢸⡇⠀⢸⣧⠀⠀
   ⠀⠀⣿⣷⣤⣿⣷⣤⣿⣿⠀⠀                         ⠀⠀⣿⣷⣤⣿⣷⣤⣿⣿⠀⠀
   ⠠⠀⣿⣿⣿⣿⣿⣿⣿⣿⠀⡀                         ⠠⠀⣿⣿⣿⣿⣿⣿⣿⣿⠀⡀
   ⠄⡀⠙⠟⢿⣿⡿⠿⠿⠋⠀⠀                         ⠄⡀⠙⠟⢿⣿⡿⠿⠿⠋⠀⠀
@@ -104,28 +104,40 @@ GHOST
 
 # ─── Detección de distro ─────────────────────────────────────────────────────
 detect_distro() {
-  if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
-    # Normalizar: mint y ubuntu comparten apt. Arch es arch.
-    case "$ID" in
-      ubuntu|linuxmint|pop)  DISTRO="debian" ;;
-      debian)                DISTRO="debian" ;;
-      arch|manjaro|endeavouros) DISTRO="arch" ;;
-      *)
-        # Fallback por ID_LIKE
-        case "${ID_LIKE:-}" in
-          *ubuntu*|*debian*) DISTRO="debian" ;;
-          *arch*)            DISTRO="arch"   ;;
-          *)
-            error "Distro no soportada: $ID — soportadas: Ubuntu, Mint, Arch/Manjaro"
-            exit 1 ;;
-        esac ;;
-    esac
-    DISTRO_NAME="${PRETTY_NAME:-$ID}"
-  else
+  if [[ ! -f /etc/os-release ]]; then
     error "No se encontró /etc/os-release"
     exit 1
   fi
+
+  # shellcheck disable=SC1091
+  source /etc/os-release
+
+  case "$ID" in
+    ubuntu|linuxmint|pop|elementary|zorin|neon)
+                                DISTRO="debian" ;;
+    debian|raspbian)            DISTRO="debian" ;;
+    arch|manjaro|endeavouros|garuda|artix)
+                                DISTRO="arch"   ;;
+    fedora)                     DISTRO="fedora" ;;
+    rhel|centos|almalinux|rocky|ol)
+                                DISTRO="fedora" ;;  # todos usan dnf
+    opensuse-leap|opensuse-tumbleweed|opensuse|sles)
+                                DISTRO="opensuse" ;;
+    *)
+      # Fallback por ID_LIKE
+      case "${ID_LIKE:-}" in
+        *ubuntu*|*debian*)  DISTRO="debian"   ;;
+        *arch*)             DISTRO="arch"     ;;
+        *fedora*|*rhel*)    DISTRO="fedora"   ;;
+        *suse*)             DISTRO="opensuse" ;;
+        *)
+          error "Distro no soportada: $ID (ID_LIKE=${ID_LIKE:-vacío})"
+          error "Soportadas: Ubuntu/Mint/Debian · Arch/Manjaro · Fedora/RHEL/Alma · openSUSE"
+          exit 1 ;;
+      esac ;;
+  esac
+
+  DISTRO_NAME="${PRETTY_NAME:-$ID}"
 }
 
 detect_distro
@@ -143,6 +155,18 @@ ensure_gum() {
     return
   fi
 
+  # Función helper: descarga binario de gum desde GitHub (fallback universal)
+  _gum_from_github() {
+    local ver
+    ver=$(curl -s https://api.github.com/repos/charmbracelet/gum/releases/latest \
+      | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+    curl -sLo /tmp/gum.tar.gz \
+      "https://github.com/charmbracelet/gum/releases/latest/download/gum_${ver}_Linux_x86_64.tar.gz"
+    tar -xzf /tmp/gum.tar.gz -C /tmp "gum"
+    sudo mv /tmp/gum /usr/local/bin/gum
+    rm -f /tmp/gum.tar.gz
+  }
+
   case "$DISTRO" in
     debian)
       if [[ ! -f /etc/apt/sources.list.d/charm.list ]]; then
@@ -155,20 +179,24 @@ ensure_gum() {
       fi
       sudo apt-get install -y gum ;;
     arch)
-      # gum está en AUR, usar yay/paru o instalar binario
-      if has yay;  then yay -S --noconfirm gum
-      elif has paru; then paru -S --noconfirm gum
-      else
-        # Fallback: binario directo desde GitHub releases
-        local ver
-        ver=$(curl -s https://api.github.com/repos/charmbracelet/gum/releases/latest \
-          | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
-        curl -sLo /tmp/gum.tar.gz \
-          "https://github.com/charmbracelet/gum/releases/latest/download/gum_${ver}_Linux_x86_64.tar.gz"
-        tar -xzf /tmp/gum.tar.gz -C /tmp
-        sudo mv /tmp/gum /usr/local/bin/gum
-        rm -f /tmp/gum.tar.gz
-      fi ;;
+      if has yay;        then yay  -S --noconfirm gum
+      elif has paru;     then paru -S --noconfirm gum
+      else _gum_from_github; fi ;;
+    fedora)
+      # Charm tiene repo RPM oficial
+      if [[ ! -f /etc/yum.repos.d/charm.repo ]]; then
+        sudo rpm --import https://repo.charm.sh/yum/gpg.key
+        printf '[charm]\nname=Charm\nbaseurl=https://repo.charm.sh/yum/\nenabled=1\ngpgcheck=1\ngpgkey=https://repo.charm.sh/yum/gpg.key\n' \
+          | sudo tee /etc/yum.repos.d/charm.repo > /dev/null
+      fi
+      sudo dnf install -y gum ;;
+    opensuse)
+      # Charm también tiene repo RPM para openSUSE
+      if ! zypper lr charm &>/dev/null 2>&1; then
+        sudo rpm --import https://repo.charm.sh/yum/gpg.key
+        sudo zypper addrepo --refresh https://repo.charm.sh/yum/ charm 2>/dev/null || true
+      fi
+      sudo zypper install -y gum 2>/dev/null || _gum_from_github ;;
   esac
   ok "gum instalado"
 }
@@ -176,9 +204,13 @@ ensure_gum() {
 # ─── Helpers de instalación ──────────────────────────────────────────────────
 
 # Instala con el gestor nativo según distro
+# Uso: pkg_install "debian" "arch" "fedora" "opensuse"
+# Parámetros opcionales — si se omite usa el anterior como fallback
 pkg_install() {
   local pkg_debian="$1"
-  local pkg_arch="${2:-$1}"   # si no se pasa, usa el mismo nombre
+  local pkg_arch="${2:-$pkg_debian}"
+  local pkg_fedora="${3:-$pkg_debian}"
+  local pkg_opensuse="${4:-$pkg_fedora}"   # opensuse suele coincidir con fedora
 
   case "$DISTRO" in
     debian)
@@ -191,6 +223,16 @@ pkg_install() {
       info "pacman: $pkg_arch"
       run sudo pacman -S --noconfirm --needed "$pkg_arch"
       ok "$pkg_arch" ;;
+    fedora)
+      if rpm -q "$pkg_fedora" &>/dev/null 2>&1; then skip "$pkg_fedora"; return; fi
+      info "dnf: $pkg_fedora"
+      run sudo dnf install -y "$pkg_fedora"
+      ok "$pkg_fedora" ;;
+    opensuse)
+      if rpm -q "$pkg_opensuse" &>/dev/null 2>&1; then skip "$pkg_opensuse"; return; fi
+      info "zypper: $pkg_opensuse"
+      run sudo zypper install -y "$pkg_opensuse"
+      ok "$pkg_opensuse" ;;
   esac
 }
 
@@ -215,13 +257,13 @@ brew_install() {
 
 snap_install() {
   local pkg="$1"; shift; local flags="${*:-}"
-  # Snap no existe en Arch por defecto
-  if [[ "$DISTRO" == "arch" ]]; then
-    if ! has snap; then
-      warn "snap no disponible en Arch. Instalar $pkg manualmente."
-      return
-    fi
-  fi
+  case "$DISTRO" in
+    arch|fedora|opensuse)
+      if ! has snap; then
+        warn "snap no disponible por defecto en $DISTRO_NAME. Instalar $pkg manualmente."
+        return
+      fi ;;
+  esac
   if snap list "$pkg" &>/dev/null 2>&1; then skip "snap: $pkg"; return; fi
   info "snap: $pkg $flags"
   run sudo snap install "$pkg" $flags
@@ -250,73 +292,94 @@ install_system() {
   section "Paquetes del sistema — $DISTRO_NAME"
 
   case "$DISTRO" in
-    debian) run sudo apt-get update -qq ;;
-    arch)   run sudo pacman -Sy ;;
+    debian)   run sudo apt-get update -qq ;;
+    arch)     run sudo pacman -Sy ;;
+    fedora)   run sudo dnf check-update -y || true ;;
+    opensuse) run sudo zypper refresh ;;
   esac
 
-  # Formato: pkg_install "nombre-debian" "nombre-arch"
-  # Si nombre es igual en ambas distros solo poner uno
-  pkg_install build-essential        base-devel
+  # pkg_install "debian"  "arch"  "fedora"  "opensuse"
+  # Si algún nombre es igual al anterior se puede omitir (hereda)
+
+  # ── Base ──────────────────────────────────────────────────────────────────
+  pkg_install build-essential   base-devel        "@Development Tools"  patterns-devel-base
   pkg_install curl
   pkg_install wget
   pkg_install git
   pkg_install make
-  pkg_install pkg-config             pkgconf
-  pkg_install ca-certificates
-  pkg_install gnupg                  gnupg
+  pkg_install pkg-config        pkgconf           pkgconf               pkgconf
+  pkg_install ca-certificates   ca-certificates   ca-certificates       ca-certificates
+  pkg_install gnupg             gnupg             gnupg2                gpg2
+
+  # ── Shell & terminal ──────────────────────────────────────────────────────
   pkg_install zsh
   pkg_install tmux
   pkg_install screen
-  pkg_install bat
-  pkg_install fd-find                fd
+
+  # ── CLI tools ─────────────────────────────────────────────────────────────
+  pkg_install bat               bat               bat                   bat
+  pkg_install fd-find           fd                fd-find               fd
   pkg_install fzf
-  pkg_install ripgrep
-  pkg_install lsd
+  pkg_install ripgrep           ripgrep           ripgrep               ripgrep
+  pkg_install lsd               lsd               lsd                   lsd
   pkg_install jq
   pkg_install tree
   pkg_install ncdu
   pkg_install htop
   pkg_install btop
   pkg_install nvtop
-  pkg_install fastfetch
+  pkg_install fastfetch         fastfetch         fastfetch             fastfetch
   pkg_install chafa
   pkg_install cmatrix
   pkg_install hexyl
   pkg_install hyperfine
   pkg_install tokei
   pkg_install vim
-  pkg_install git-delta              git-delta
-  pkg_install fonts-firacode         ttf-fira-code
-  pkg_install fonts-hack             ttf-hack
-  pkg_install fonts-jetbrains-mono   ttf-jetbrains-mono
+  pkg_install git-delta         git-delta         git-delta             git-delta
+  pkg_install glow              glow              glow                  glow
+  pkg_install visidata          visidata          visidata              visidata
+  pkg_install bmon              bmon              bmon                  bmon
+  pkg_install httpie            python-httpie     httpie                httpie
+
+  # ── Fuentes ───────────────────────────────────────────────────────────────
+  pkg_install fonts-firacode    ttf-fira-code     fira-code-fonts       fira-code-fonts
+  pkg_install fonts-hack        ttf-hack          jetbrains-mono-fonts  hack-fonts
+  pkg_install fonts-jetbrains-mono ttf-jetbrains-mono jetbrains-mono-fonts jetbrains-mono-fonts
+
+  # ── Lenguajes y runtime ───────────────────────────────────────────────────
   pkg_install gcc
-  pkg_install golang                 go
-  pkg_install default-jdk            jdk-openjdk
+  pkg_install golang            go                golang                go
+  pkg_install default-jdk       jdk-openjdk       java-latest-openjdk   java-21-openjdk
   pkg_install maven
-  pkg_install ruby3.3-dev            ruby
-  pkg_install pipx                   python-pipx
+  pkg_install ruby3.3-dev       ruby              ruby                  ruby
+  pkg_install pipx              python-pipx       pipx                  python313-pipx
   pkg_install autoconf
-  pkg_install libssl-dev             openssl
-  pkg_install libfontconfig1-dev     fontconfig
-  pkg_install libpam0g-dev           pam
-  pkg_install libev-dev              libev
-  pkg_install libasound2-dev         alsa-lib
-  pkg_install libjpeg-dev            libjpeg-turbo
-  pkg_install libgif-dev             giflib
-  pkg_install libfuse2t64            fuse2
-  pkg_install libxdo-dev             xdotool
-  pkg_install libxkbcommon-dev       libxkbcommon
-  pkg_install libxkbcommon-x11-dev   libxkbcommon-x11
-  # Docker
-  pkg_install docker.io              docker
-  pkg_install docker-compose-plugin  docker-compose
-  # Multimedia
+
+  # ── Libs de desarrollo ────────────────────────────────────────────────────
+  pkg_install libssl-dev        openssl           openssl-devel         libopenssl-devel
+  pkg_install libfontconfig1-dev fontconfig       fontconfig-devel      fontconfig-devel
+  pkg_install libpam0g-dev      pam               pam-devel             pam-devel
+  pkg_install libev-dev         libev             libev-devel           libev-devel
+  pkg_install libasound2-dev    alsa-lib          alsa-lib-devel        alsa-devel
+  pkg_install libjpeg-dev       libjpeg-turbo     libjpeg-turbo-devel   libjpeg8-devel
+  pkg_install libgif-dev        giflib            giflib-devel          giflib-devel
+  pkg_install libfuse2t64       fuse2             fuse                  fuse
+  pkg_install libxdo-dev        xdotool           libxdo-devel          xdotool
+  pkg_install libxkbcommon-dev  libxkbcommon      libxkbcommon-devel    libxkbcommon-devel
+  pkg_install libxkbcommon-x11-dev libxkbcommon-x11 libxkbcommon-x11-devel libxkbcommon-x11-devel
+
+  # ── Docker ────────────────────────────────────────────────────────────────
+  pkg_install docker.io         docker            docker                docker
+  pkg_install docker-compose-plugin docker-compose docker-compose       docker-compose
+
+  # ── Multimedia ────────────────────────────────────────────────────────────
   pkg_install ffmpeg
   pkg_install mpv
   pkg_install vlc
-  pkg_install imagemagick
-  pkg_install obs-studio
-  # GUI
+  pkg_install imagemagick       imagemagick       ImageMagick           ImageMagick
+  pkg_install obs-studio        obs-studio        obs-studio            obs-studio
+
+  # ── GUI ───────────────────────────────────────────────────────────────────
   pkg_install inkscape
   pkg_install blender
   pkg_install flameshot
@@ -324,34 +387,43 @@ install_system() {
   pkg_install thunar
   pkg_install xfce4
   pkg_install xfce4-goodies
-  # i3
-  pkg_install i3
-  pkg_install suckless-tools         dmenu
+
+  # ── i3 ────────────────────────────────────────────────────────────────────
+  pkg_install i3                i3-wm             i3                    i3
+  pkg_install suckless-tools    dmenu             dmenu                 dmenu
   pkg_install arandr
-  # Utilidades
+
+  # ── Utilidades ────────────────────────────────────────────────────────────
   pkg_install ranger
   pkg_install zoxide
   pkg_install entr
   pkg_install socat
   pkg_install nmap
-  pkg_install openssh-server         openssh
+  pkg_install openssh-server    openssh           openssh-server        openssh
   pkg_install graphviz
-  pkg_install awscli                 aws-cli
+  pkg_install awscli            aws-cli           awscli                aws-cli
   pkg_install gparted
-  pkg_install xournal
   pkg_install xournalpp
   pkg_install audacity
-  pkg_install musescore              musescore3
+  pkg_install musescore         musescore3        musescore             musescore
   pkg_install bc
-  pkg_install tesseract-ocr          tesseract
-  pkg_install tesseract-ocr-eng      tesseract-data-eng
-  pkg_install tesseract-ocr-spa      tesseract-data-spa
-  pkg_install poppler-utils          poppler
-  pkg_install libimage-exiftool-perl perl-image-exiftool
-  pkg_install nvidia-cuda-toolkit    cuda
-  pkg_install texlive-full           texlive-most
+  pkg_install btrfs-progs       btrfs-progs       btrfs-progs           btrfsprogs
+  pkg_install efibootmgr
 
-  # Paquetes solo Debian/Ubuntu/Mint
+  # ── OCR / Docs ────────────────────────────────────────────────────────────
+  pkg_install tesseract-ocr     tesseract         tesseract             tesseract-ocr
+  pkg_install tesseract-ocr-eng tesseract-data-eng tesseract-langpack-eng tesseract-ocr-traineddata-english
+  pkg_install tesseract-ocr-spa tesseract-data-spa tesseract-langpack-spa tesseract-ocr-traineddata-spanish
+  pkg_install poppler-utils     poppler           poppler-utils         poppler-tools
+  pkg_install libimage-exiftool-perl perl-image-exiftool perl-Image-ExifTool perl-Image-ExifTool
+
+  # ── Nvidia / CUDA ─────────────────────────────────────────────────────────
+  pkg_install nvidia-cuda-toolkit cuda             cuda-toolkit          cuda-toolkit
+
+  # ── LaTeX ─────────────────────────────────────────────────────────────────
+  pkg_install texlive-full      texlive-most      texlive-scheme-full   texlive-scheme-full
+
+  # ── Solo Debian/Ubuntu/Mint ───────────────────────────────────────────────
   if [[ "$DISTRO" == "debian" ]]; then
     pkg_install software-properties-common
     pkg_install apt-transport-https
@@ -360,18 +432,12 @@ install_system() {
     pkg_install hunspell-es
     pkg_install language-pack-es
     pkg_install bpytop
-    pkg_install glow
-    pkg_install visidata
-    pkg_install bmon
-    pkg_install httpie
-    pkg_install efibootmgr
+    pkg_install ncurses-base
     pkg_install evtest
     pkg_install xinput
-    pkg_install btrfs-progs
-    pkg_install ncurses-base
     pkg_install peek
 
-    # VS Code
+    # VS Code via repo Microsoft
     if ! has code; then
       info "Instalando VS Code..."
       run wget -qO- https://packages.microsoft.com/keys/microsoft.asc \
@@ -383,7 +449,7 @@ install_system() {
       ok "VS Code"
     else skip "VS Code"; fi
 
-    # GitHub CLI
+    # GitHub CLI via repo oficial
     if ! has gh; then
       info "Instalando GitHub CLI..."
       run curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -395,30 +461,88 @@ install_system() {
     else skip "GitHub CLI"; fi
   fi
 
-  # Paquetes solo Arch
+  # ── Solo Arch ─────────────────────────────────────────────────────────────
   if [[ "$DISTRO" == "arch" ]]; then
-    pkg_install base-devel            # para compilar AUR
-    pkg_install hunspell-es_es        hunspell-es_es
-    pkg_install python-bpytop         python-bpytop  2>/dev/null || aur_install bpytop
-    pkg_install glow
-    pkg_install visidata
-    pkg_install bmon
-    pkg_install efibootmgr
-    pkg_install xorg-xinput           xorg-xinput
-    pkg_install btrfs-progs
-    pkg_install ncurses
-    # VS Code desde AUR
-    if ! has code; then aur_install visual-studio-code-bin; fi
-    # gh desde repos oficiales en Arch
-    pkg_install github-cli            github-cli
-
     # Instalar yay si no hay helper AUR
     if ! has yay && ! has paru; then
       info "Instalando yay (AUR helper)..."
-      run git clone https://aur.archlinux.org/yay.git /tmp/yay
-      run cd /tmp/yay && makepkg -si --noconfirm
+      run git clone https://aur.archlinux.org/yay.git /tmp/yay-build
+      run cd /tmp/yay-build && makepkg -si --noconfirm
       ok "yay"
     fi
+    pkg_install hunspell-es_es  hunspell-es_es
+    ! has code && aur_install visual-studio-code-bin
+    pkg_install github-cli      github-cli
+    aur_install bpytop
+  fi
+
+  # ── Solo Fedora/RHEL ──────────────────────────────────────────────────────
+  if [[ "$DISTRO" == "fedora" ]]; then
+    # RPM Fusion para multimedia (ffmpeg, vlc, etc.)
+    if ! rpm -q rpmfusion-free-release &>/dev/null; then
+      info "Habilitando RPM Fusion..."
+      run sudo dnf install -y \
+        "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+        "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"
+      ok "RPM Fusion"
+    else skip "RPM Fusion"; fi
+
+    pkg_install hunspell-es     hunspell-es     hunspell-es
+    pkg_install evtest          evtest          evtest
+    pkg_install xorg-x11-utils  xorg-x11-utils  xorg-x11-utils
+
+    # VS Code via repo Microsoft
+    if ! has code; then
+      info "Instalando VS Code..."
+      run sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+      run printf '[code]\nname=VS Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc\n' \
+        | sudo tee /etc/yum.repos.d/vscode.repo > /dev/null
+      run sudo dnf install -y code
+      ok "VS Code"
+    else skip "VS Code"; fi
+
+    # GitHub CLI via repo dnf
+    if ! has gh; then
+      info "Instalando GitHub CLI..."
+      run sudo dnf install -y 'dnf-command(config-manager)'
+      run sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+      run sudo dnf install -y gh
+      ok "GitHub CLI"
+    else skip "GitHub CLI"; fi
+  fi
+
+  # ── Solo openSUSE ─────────────────────────────────────────────────────────
+  if [[ "$DISTRO" == "opensuse" ]]; then
+    # Packman para multimedia
+    if ! zypper lr packman &>/dev/null 2>&1; then
+      info "Habilitando repo Packman..."
+      run sudo zypper addrepo --refresh \
+        https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/ packman 2>/dev/null || true
+      run sudo zypper --gpg-auto-import-keys refresh
+      ok "Packman"
+    else skip "Packman"; fi
+
+    pkg_install hunspell-es_ES  hunspell-es_ES  hunspell-es_ES
+    pkg_install xorg-x11-xinput xinput          xinput
+
+    # VS Code via repo Microsoft (usa el mismo RPM que Fedora)
+    if ! has code; then
+      info "Instalando VS Code..."
+      run sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+      run sudo zypper addrepo https://packages.microsoft.com/yumrepos/vscode vscode 2>/dev/null || true
+      run sudo zypper --gpg-auto-import-keys refresh
+      run sudo zypper install -y code
+      ok "VS Code"
+    else skip "VS Code"; fi
+
+    # GitHub CLI
+    if ! has gh; then
+      info "Instalando GitHub CLI..."
+      run sudo zypper addrepo https://cli.github.com/packages/rpm/gh-cli.repo gh-cli 2>/dev/null || true
+      run sudo zypper --gpg-auto-import-keys refresh
+      run sudo zypper install -y gh
+      ok "GitHub CLI"
+    else skip "GitHub CLI"; fi
   fi
 
   warn "Instalar manualmente: AnyDesk, Cursor, DBeaver CE"
