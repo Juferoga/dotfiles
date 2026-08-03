@@ -1,41 +1,40 @@
 #!/usr/bin/env bash
-# bootstrap.sh — Instalador automático de paquetes para Juferoga
-# Uso: ./bootstrap.sh [--dry-run] [--only=<sección>]
-#   Secciones: apt, brew, snap, node, python, rust, go, bun, zsh, ai
-#
-# Ejemplo: ./bootstrap.sh --only=apt
+# bootstrap.sh — Instalador interactivo de paquetes para Juferoga
+# Uso: ./bootstrap.sh [--auto] [--dry-run]
+#   --auto     Instala todo sin preguntar
+#   --dry-run  Muestra qué haría sin ejecutar nada
 
 set -euo pipefail
 
 # ─── Colores ─────────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+RED='\033[0;31m';    GREEN='\033[0;32m';   YELLOW='\033[1;33m'
+BLUE='\033[0;34m';   CYAN='\033[0;36m';   MAGENTA='\033[0;35m'
+BOLD='\033[1m';      DIM='\033[2m';        NC='\033[0m'
 
 info()    { echo -e "${BLUE}[INFO]${NC}  $*"; }
 ok()      { echo -e "${GREEN}[ OK ]${NC}  $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-error()   { echo -e "${RED}[ERROR]${NC} $*"; }
-section() { echo -e "\n${BOLD}${CYAN}══ $* ══${NC}"; }
-skip()    { echo -e "${YELLOW}[SKIP]${NC}  $* (ya instalado)"; }
+error()   { echo -e "${RED}[ERR ]${NC}  $*" >&2; }
+section() { echo -e "\n${BOLD}${CYAN}══════ $* ══════${NC}"; }
+skip()    { echo -e "${DIM}[SKIP]  $* (ya instalado)${NC}"; }
 
 # ─── Flags ───────────────────────────────────────────────────────────────────
 DRY_RUN=false
-ONLY=""
+AUTO=false
 
 for arg in "$@"; do
   case $arg in
-    --dry-run)     DRY_RUN=true ;;
-    --only=*)      ONLY="${arg#--only=}" ;;
+    --dry-run) DRY_RUN=true ;;
+    --auto)    AUTO=true ;;
     --help|-h)
-      echo "Uso: $0 [--dry-run] [--only=<sección>]"
-      echo "Secciones: apt, brew, snap, node, python, rust, go, bun, zsh, ai"
+      echo "Uso: $0 [--auto] [--dry-run]"
+      echo "  --auto      Instala todo sin TUI"
+      echo "  --dry-run   Muestra acciones sin ejecutar"
       exit 0 ;;
   esac
 done
 
-[[ "$DRY_RUN" == true ]] && warn "Modo DRY-RUN — no se instalará nada"
-
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# ─── Run helper ──────────────────────────────────────────────────────────────
 run() {
   if [[ "$DRY_RUN" == true ]]; then
     info "[DRY] $*"
@@ -44,91 +43,129 @@ run() {
   fi
 }
 
-# Retorna 0 si el comando existe
 has() { command -v "$1" &>/dev/null; }
 
-# Instala un paquete apt si no está instalado
+# ─── Fantasmas ASCII ─────────────────────────────────────────────────────────
+GHOST_MAIN=$(cat << 'GHOST'
+
+        .-.      .-.      .-.      .-.
+       (   )    (   )    (   )    (   )
+        '-'      '-'      '-'      '-'
+      Juferoga  Dotfiles Bootstrap  👻
+GHOST
+)
+
+GHOST_DONE=$(cat << 'GHOST'
+
+         ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+         ░  .-.    Bootstrap  .-.     ░
+         ░ (   )   completado (   )   ░
+         ░  '-'      ✓✓✓✓✓    '-'    ░
+         ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+GHOST
+)
+
+GHOST_THINKING=$(cat << 'GHOST'
+
+          .-"""-.
+         /        \
+        |  o    o  |
+        |    __    |   Instalando...
+         \  (__) /    dame un seg 👻
+          '------'
+GHOST
+)
+
+GHOST_HEADER=$(cat << 'GHOST'
+
+  ██████╗  ██████╗ ████████╗███████╗██╗██╗     ███████╗███████╗
+  ██╔══██╗██╔═══██╗╚══██╔══╝██╔════╝██║██║     ██╔════╝██╔════╝
+  ██║  ██║██║   ██║   ██║   █████╗  ██║██║     █████╗  ███████╗
+  ██║  ██║██║   ██║   ██║   ██╔══╝  ██║██║     ██╔══╝  ╚════██║
+  ██████╔╝╚██████╔╝   ██║   ██║     ██║███████╗███████╗███████║
+  ╚═════╝  ╚═════╝    ╚═╝   ╚═╝     ╚═╝╚══════╝╚══════╝╚══════╝
+
+           👻  by Juferoga  👻       ubuntu bootstrap
+GHOST
+)
+
+# ─── Instalar gum si no está ─────────────────────────────────────────────────
+ensure_gum() {
+  if has gum; then return; fi
+
+  echo -e "${YELLOW}Instalando gum (TUI engine)...${NC}"
+  if [[ "$DRY_RUN" == true ]]; then
+    info "[DRY] instalaría gum via apt"
+    return
+  fi
+
+  if [[ ! -f /etc/apt/sources.list.d/charm.list ]]; then
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://repo.charm.sh/apt/gpg.key \
+      | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+      | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
+    sudo apt-get update -qq
+  fi
+  sudo apt-get install -y gum
+  ok "gum instalado"
+}
+
+# ─── Helpers de instalación ──────────────────────────────────────────────────
 apt_install() {
   local pkg="$1"
-  if dpkg -s "$pkg" &>/dev/null 2>&1; then
-    skip "$pkg"
-  else
-    info "apt install $pkg"
-    run sudo apt-get install -y "$pkg"
-    ok "$pkg"
-  fi
+  if dpkg -s "$pkg" &>/dev/null 2>&1; then skip "$pkg"; return; fi
+  info "apt: $pkg"
+  run sudo apt-get install -y "$pkg"
+  ok "$pkg"
 }
 
-# Instala un paquete brew si no está instalado
 brew_install() {
   local pkg="$1"
-  if brew list "$pkg" &>/dev/null 2>&1; then
-    skip "brew: $pkg"
-  else
-    info "brew install $pkg"
-    run brew install "$pkg"
-    ok "brew: $pkg"
-  fi
+  if brew list "$pkg" &>/dev/null 2>&1; then skip "brew: $pkg"; return; fi
+  info "brew: $pkg"
+  run brew install "$pkg"
+  ok "brew: $pkg"
 }
 
-# Instala un snap si no está instalado
 snap_install() {
-  local pkg="$1"; shift
-  local flags="${*:-}"
-  if snap list "$pkg" &>/dev/null 2>&1; then
-    skip "snap: $pkg"
-  else
-    info "snap install $pkg $flags"
-    run sudo snap install "$pkg" $flags
-    ok "snap: $pkg"
-  fi
+  local pkg="$1"; shift; local flags="${*:-}"
+  if snap list "$pkg" &>/dev/null 2>&1; then skip "snap: $pkg"; return; fi
+  info "snap: $pkg $flags"
+  run sudo snap install "$pkg" $flags
+  ok "snap: $pkg"
 }
 
-# Instala un paquete pip si no está instalado
 pip_install() {
   local pkg="$1"
-  if python3 -m pip show "$pkg" &>/dev/null 2>&1; then
-    skip "pip: $pkg"
-  else
-    info "pip install $pkg"
-    run python3 -m pip install --quiet "$pkg"
-    ok "pip: $pkg"
-  fi
+  if python3 -m pip show "$pkg" &>/dev/null 2>&1; then skip "pip: $pkg"; return; fi
+  info "pip: $pkg"
+  run python3 -m pip install --quiet "$pkg"
+  ok "pip: $pkg"
 }
 
-# ─── Sección selector ────────────────────────────────────────────────────────
-should_run() {
-  [[ -z "$ONLY" || "$ONLY" == "$1" ]]
+npm_global_install() {
+  local pkg="$1"
+  if npm list -g "$pkg" &>/dev/null 2>&1; then skip "npm: $pkg"; return; fi
+  info "npm: $pkg"
+  run npm install -g "$pkg"
+  ok "npm: $pkg"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║   Bootstrap installer — Juferoga         ║${NC}"
-echo -e "${BOLD}╚══════════════════════════════════════════╝${NC}"
-echo ""
+# ─── Bloques de instalación ──────────────────────────────────────────────────
 
-# ─── APT ─────────────────────────────────────────────────────────────────────
-if should_run apt; then
-  section "APT — System packages"
+install_apt() {
+  section "APT — Paquetes del sistema"
   run sudo apt-get update -qq
 
-  APT_PACKAGES=(
-    # Sistema base
+  local pkgs=(
     build-essential curl wget git make pkg-config ca-certificates
     software-properties-common apt-transport-https gnupg lsb-release
-    # Shell & terminal
     zsh tmux screen
-    # Herramientas CLI esenciales
     bat fd-find fzf ripgrep lsd jq tree ncdu htop btop bpytop nvtop
     fastfetch chafa cmatrix hexyl hyperfine tokei glow visidata bmon
-    # Git extras
-    git-delta
-    # Editores
-    vim
-    # Fuentes
+    git-delta vim
     fonts-firacode fonts-hack fonts-jetbrains-mono
-    # Desarrollo
     gcc golang default-jdk maven ruby3.3-dev
     python3.13-venv pipx
     autoconf libssl-dev libfontconfig1-dev libpam0g-dev
@@ -137,314 +174,275 @@ if should_run apt; then
     libxcb-xinerama0-dev libxcb-xkb-dev libxcb-xrm-dev libxcb1-dev
     libxdo-dev libxkbcommon-dev libxkbcommon-x11-dev
     libev-dev libasound2-dev libjpeg-dev libgif-dev libfuse2t64
-    # Docker
     docker-buildx-plugin docker-compose-plugin docker.io
-    # Multimedia
-    ffmpeg mpv obs-studio vlc imagemagick
-    # GUI apps
+    ffmpeg mpv vlc imagemagick obs-studio
     inkscape blender flameshot peek scrot
     thunar xfce4 xfce4-goodies
-    # Window manager
     i3 suckless-tools arandr
-    # Utilidades
     ranger zoxide entr socat nmap openssh-server
     poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa
     graphviz httpie awscli
-    # Idioma
     language-pack-es hunspell-es wspanish
-    # Nvidia
     nvidia-cuda-toolkit
-    # LaTeX
     texlive-full
-    # Extras
     gparted ncurses-base xournal xournalpp audacity musescore
-    bc btrfs-progs efibootmgr evtest xinput
-    libimage-exiftool-perl
+    bc btrfs-progs efibootmgr evtest xinput libimage-exiftool-perl
   )
 
-  for pkg in "${APT_PACKAGES[@]}"; do
-    apt_install "$pkg"
-  done
-fi
-
-# ─── Repositorios externos (apt) ─────────────────────────────────────────────
-if should_run apt; then
-  section "APT — Repos externos"
+  for pkg in "${pkgs[@]}"; do apt_install "$pkg"; done
 
   # VS Code
   if ! has code; then
     info "Instalando VS Code..."
-    run wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | sudo tee /etc/apt/keyrings/packages.microsoft.gpg > /dev/null
-    run echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | sudo tee /etc/apt/sources.list.d/vscode.list
+    run wget -qO- https://packages.microsoft.com/keys/microsoft.asc \
+      | gpg --dearmor \
+      | sudo tee /etc/apt/keyrings/packages.microsoft.gpg > /dev/null
+    run echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" \
+      | sudo tee /etc/apt/sources.list.d/vscode.list
     run sudo apt-get update -qq && sudo apt-get install -y code
     ok "VS Code"
-  else
-    skip "VS Code"
-  fi
+  else skip "VS Code"; fi
 
-  # GitHub CLI (gh)
+  # GitHub CLI
   if ! has gh; then
     info "Instalando GitHub CLI..."
-    run curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-    run echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list
+    run curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+    run echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      | sudo tee /etc/apt/sources.list.d/github-cli.list
     run sudo apt-get update -qq && sudo apt-get install -y gh
     ok "GitHub CLI"
-  else
-    skip "GitHub CLI"
-  fi
+  else skip "GitHub CLI"; fi
 
-  # Docker GPG (si docker.io no es suficiente)
-  # AnyDesk — requiere descarga manual (omitido por seguridad)
-  warn "AnyDesk / Cursor / DBeaver: instalar manualmente desde sus sitios oficiales"
-fi
+  warn "Instalar manualmente: AnyDesk, Cursor, DBeaver CE"
+}
 
-# ─── SNAP ────────────────────────────────────────────────────────────────────
-if should_run snap; then
+install_brew() {
+  section "Homebrew"
+  if ! has brew; then
+    info "Instalando Homebrew..."
+    run /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" 2>/dev/null || true
+    ok "Homebrew"
+  else skip "Homebrew"; fi
+
+  for pkg in gh node ripgrep python@3.14; do
+    brew_install "$pkg"
+  done
+}
+
+install_snap() {
   section "Snap packages"
   snap_install ghostty --classic
   snap_install firefox
   snap_install spotify
   snap_install telegram-desktop
   snap_install onlyoffice-desktopeditors
-fi
+}
 
-# ─── Homebrew ────────────────────────────────────────────────────────────────
-if should_run brew; then
-  section "Homebrew"
-
-  if ! has brew; then
-    info "Instalando Homebrew..."
-    run /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    # Cargar brew en el PATH actual
-    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" 2>/dev/null || true
-    ok "Homebrew instalado"
-  else
-    skip "Homebrew"
-  fi
-
-  BREW_PACKAGES=(
-    gh
-    node
-    ripgrep
-    python@3.14
-  )
-
-  for pkg in "${BREW_PACKAGES[@]}"; do
-    brew_install "$pkg"
-  done
-fi
-
-# ─── ZSH / Oh My Zsh ─────────────────────────────────────────────────────────
-if should_run zsh; then
+install_zsh() {
   section "Zsh + Oh My Zsh"
-
   if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
     info "Instalando Oh My Zsh..."
     run sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
     ok "Oh My Zsh"
-  else
-    skip "Oh My Zsh"
-  fi
+  else skip "Oh My Zsh"; fi
 
-  ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
-
-  # Plugins
-  declare -A ZSH_PLUGINS=(
+  local ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+  declare -A plugins=(
     ["zsh-autosuggestions"]="https://github.com/zsh-users/zsh-autosuggestions"
     ["zsh-syntax-highlighting"]="https://github.com/zsh-users/zsh-syntax-highlighting"
   )
-
-  for name in "${!ZSH_PLUGINS[@]}"; do
-    local_path="$ZSH_CUSTOM/plugins/$name"
-    if [[ -d "$local_path" ]]; then
-      skip "zsh plugin: $name"
+  for name in "${!plugins[@]}"; do
+    local path="$ZSH_CUSTOM/plugins/$name"
+    if [[ -d "$path" ]]; then skip "plugin: $name"
     else
-      info "Instalando plugin: $name"
-      run git clone --depth=1 "${ZSH_PLUGINS[$name]}" "$local_path"
-      ok "zsh plugin: $name"
+      run git clone --depth=1 "${plugins[$name]}" "$path"
+      ok "plugin: $name"
     fi
   done
 
-  # Cambiar shell a zsh
   if [[ "$SHELL" != "$(which zsh)" ]]; then
-    info "Cambiando shell a zsh..."
     run chsh -s "$(which zsh)"
-    ok "Shell cambiado a zsh"
-  else
-    skip "Shell ya es zsh"
-  fi
-fi
+    ok "Shell → zsh"
+  else skip "Shell ya es zsh"; fi
+}
 
-# ─── Node / NVM ──────────────────────────────────────────────────────────────
-if should_run node; then
+install_node() {
   section "Node — NVM"
-
   if [[ ! -d "$HOME/.nvm" ]]; then
-    info "Instalando NVM..."
     run curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-    ok "NVM instalado"
-  else
-    skip "NVM"
-  fi
+    ok "NVM"
+  else skip "NVM"; fi
 
-  # Cargar nvm para usarlo en el script
   export NVM_DIR="$HOME/.nvm"
   # shellcheck disable=SC1091
-  [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+  [[ -s "$NVM_DIR/nvm.sh" ]] && \. "$NVM_DIR/nvm.sh"
 
-  NVM_VERSIONS=(22 26)
-  for version in "${NVM_VERSIONS[@]}"; do
-    if nvm ls "$version" &>/dev/null 2>&1; then
-      skip "node v$version"
-    else
-      info "Instalando node v$version..."
-      run nvm install "$version"
-      ok "node v$version"
-    fi
+  for v in 22 26; do
+    nvm ls "$v" &>/dev/null 2>&1 && skip "node v$v" || { run nvm install "$v"; ok "node v$v"; }
   done
 
-  # NPM globals
-  NPM_GLOBALS=(mcporter openclaw)
-  for pkg in "${NPM_GLOBALS[@]}"; do
-    if npm list -g "$pkg" &>/dev/null 2>&1; then
-      skip "npm global: $pkg"
-    else
-      info "npm install -g $pkg"
-      run npm install -g "$pkg"
-      ok "npm: $pkg"
-    fi
-  done
-fi
+  for pkg in mcporter openclaw; do npm_global_install "$pkg"; done
+}
 
-# ─── Bun ─────────────────────────────────────────────────────────────────────
-if should_run bun; then
+install_bun() {
   section "Bun"
-  if has bun; then
-    skip "Bun"
-  else
-    info "Instalando Bun..."
-    run curl -fsSL https://bun.sh/install | bash
-    ok "Bun"
-  fi
-fi
+  has bun && { skip "Bun"; return; }
+  run curl -fsSL https://bun.sh/install | bash
+  ok "Bun"
+}
 
-# ─── Rust ────────────────────────────────────────────────────────────────────
-if should_run rust; then
+install_rust() {
   section "Rust — rustup"
   if has rustup; then
-    info "Actualizando Rust..."
-    run rustup update stable
-    ok "Rust actualizado"
+    run rustup update stable; ok "Rust actualizado"
   else
-    info "Instalando rustup..."
     run curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    # shellcheck disable=SC1091
-    [[ "$DRY_RUN" == false ]] && . "$HOME/.cargo/env"
-    ok "Rust instalado"
+    [[ "$DRY_RUN" == false ]] && source "$HOME/.cargo/env" || true
+    ok "Rust"
   fi
+  has rust-analyzer && skip "rust-analyzer" || { run cargo install rust-analyzer; ok "rust-analyzer"; }
+}
 
-  # Herramientas cargo
-  CARGO_TOOLS=(rust-analyzer)
-  for tool in "${CARGO_TOOLS[@]}"; do
-    if has "$tool"; then
-      skip "cargo: $tool"
-    else
-      info "cargo install $tool"
-      run cargo install "$tool"
-      ok "cargo: $tool"
-    fi
-  done
-fi
-
-# ─── Python / pip ────────────────────────────────────────────────────────────
-if should_run python; then
+install_python() {
   section "Python — pip packages"
-
   if ! has uv; then
-    info "Instalando uv..."
     run curl -LsSf https://astral.sh/uv/install.sh | sh
-    ok "uv instalado"
-  else
-    skip "uv"
-  fi
+    ok "uv"
+  else skip "uv"; fi
 
-  PIP_PACKAGES=(
-    # ML / AI
+  local pkgs=(
     torch torchvision transformers accelerate
-    huggingface_hub datasets safetensors
-    openai-whisper ollama
-    # Data / ciencia
-    numpy pandas scipy matplotlib scikit-learn
-    jupyterlab ipykernel
-    # LLM frameworks
+    huggingface_hub safetensors openai-whisper ollama
+    numpy pandas scipy matplotlib scikit-learn jupyterlab ipykernel
     langchain langchain-core langgraph langsmith
-    # Visión
-    opencv-python pillow imageio
-    # Audio / Video
-    moviepy edge-tts sounddevice gtts
-    # Docs
-    docling pypdf python-docx python-pptx
-    pytesseract
-    # Utils
-    boto3 kubernetes redis
-    python-dotenv requests httpx
-    beautifulsoup4 feedparser
-    duckdb
-    firecrawl-py
-    pytest
-    # Dev
-    black ruff isort mypy
-    pre-commit
+    opencv-python pillow imageio moviepy
+    edge-tts sounddevice gtts
+    docling pypdf python-docx python-pptx pytesseract
+    boto3 kubernetes redis python-dotenv requests httpx
+    beautifulsoup4 duckdb firecrawl-py pytest
+    black ruff isort mypy pre-commit
   )
+  for pkg in "${pkgs[@]}"; do pip_install "$pkg"; done
+}
 
-  for pkg in "${PIP_PACKAGES[@]}"; do
-    pip_install "$pkg"
-  done
-fi
-
-# ─── Herramientas AI (binarios) ───────────────────────────────────────────────
-if should_run ai; then
+install_ai() {
   section "Herramientas AI"
-
-  # Kiro CLI
-  if ! has kiro-cli; then
-    warn "Kiro CLI: instalar manualmente desde https://kiro.dev"
-  else
-    skip "Kiro CLI"
-  fi
-
-  # Claude CLI
-  if ! has claude; then
-    warn "Claude CLI: instalar manualmente"
-  else
-    skip "Claude CLI"
-  fi
-
-  # Ollama
   if ! has ollama; then
-    info "Instalando Ollama..."
     run curl -fsSL https://ollama.com/install.sh | sh
     ok "Ollama"
-  else
-    skip "Ollama"
-  fi
+  else skip "Ollama"; fi
 
-  # LM Studio CLI (lms)
-  if ! has lms; then
-    warn "LM Studio: instalar desde https://lmstudio.ai"
-  else
-    skip "LM Studio CLI"
+  has kiro-cli    && skip "Kiro CLI"    || warn "Kiro CLI: instalar desde https://kiro.dev"
+  has claude      && skip "Claude CLI"  || warn "Claude CLI: instalar manualmente"
+  has lms         && skip "LM Studio"   || warn "LM Studio: https://lmstudio.ai"
+}
+
+# ─── Mapa de secciones ───────────────────────────────────────────────────────
+declare -A SECTION_LABELS=(
+  ["apt"]="APT  — Sistema, CLI, Docker, Nvidia, LaTeX, fuentes"
+  ["brew"]="Brew — Homebrew + node, gh, ripgrep, python@3.14"
+  ["snap"]="Snap — Ghostty, Firefox, Spotify, Telegram, OnlyOffice"
+  ["zsh"]="Zsh  — Oh My Zsh + plugins autosuggestions/syntax"
+  ["node"]="Node — NVM + v22 + v26 + npm globals (openclaw)"
+  ["bun"]="Bun  — Bun runtime"
+  ["rust"]="Rust — rustup + rust-analyzer"
+  ["python"]="Python — uv + pip (torch, langchain, opencv...)"
+  ["ai"]="AI   — Ollama + avisos Kiro/Claude/LMStudio"
+)
+
+SECTION_ORDER=(apt brew snap zsh node bun rust python ai)
+
+run_section() {
+  echo -e "$GHOST_THINKING"
+  case "$1" in
+    apt)    install_apt    ;;
+    brew)   install_brew   ;;
+    snap)   install_snap   ;;
+    zsh)    install_zsh    ;;
+    node)   install_node   ;;
+    bun)    install_bun    ;;
+    rust)   install_rust   ;;
+    python) install_python ;;
+    ai)     install_ai     ;;
+  esac
+}
+
+# ─── TUI con gum ─────────────────────────────────────────────────────────────
+tui_select() {
+  local args=()
+  for key in "${SECTION_ORDER[@]}"; do
+    args+=("$key" "${SECTION_LABELS[$key]}")
+  done
+
+  gum choose \
+    --no-limit \
+    --cursor="👻 " \
+    --selected.foreground="212" \
+    --header="$(echo -e "${BOLD}Selecciona con ESPACIO, confirma con ENTER${NC}")" \
+    --header.foreground="99" \
+    "${args[@]}"
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+clear
+echo -e "${MAGENTA}${GHOST_HEADER}${NC}"
+[[ "$DRY_RUN" == true ]] && echo -e "${YELLOW}  ⚠  Modo DRY-RUN activo — no se instalará nada${NC}\n"
+
+if [[ "$AUTO" == true ]]; then
+  # Modo automático: instala todo
+  warn "Modo --auto: instalando todo sin preguntar"
+  SELECTED=("${SECTION_ORDER[@]}")
+else
+  # Instalar gum para la TUI
+  ensure_gum
+
+  echo -e "${CYAN}${GHOST_MAIN}${NC}"
+  echo -e "${DIM}  Usa las flechas para moverte · ESPACIO para seleccionar · ENTER para confirmar${NC}\n"
+
+  # Lanzar selector
+  mapfile -t SELECTED < <(tui_select)
+
+  if [[ ${#SELECTED[@]} -eq 0 ]]; then
+    echo -e "\n${YELLOW}No seleccionaste nada. ¡Hasta luego! 👻${NC}\n"
+    exit 0
+  fi
+fi
+
+# Confirmación
+echo ""
+echo -e "${BOLD}Vas a instalar:${NC}"
+for s in "${SELECTED[@]}"; do
+  echo -e "  ${GREEN}▸${NC} ${SECTION_LABELS[$s]}"
+done
+echo ""
+
+if [[ "$AUTO" == false && "$DRY_RUN" == false ]]; then
+  if ! gum confirm "¿Arrancamos? 👻"; then
+    echo -e "\n${YELLOW}Cancelado. Hasta la próxima 👻${NC}\n"
+    exit 0
+  fi
+fi
+
+# Ejecutar secciones seleccionadas
+echo ""
+for s in "${SELECTED[@]}"; do
+  run_section "$s"
+done
+
+# ─── Symlinks al final ───────────────────────────────────────────────────────
+DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$DOTFILES_DIR/install.sh" ]]; then
+  echo ""
+  if [[ "$AUTO" == true ]]; then
+    "$DOTFILES_DIR/install.sh"
+  elif gum confirm "¿Aplicar symlinks de dotfiles también? (install.sh)"; then
+    "$DOTFILES_DIR/install.sh"
   fi
 fi
 
 # ─── Fin ─────────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════╗${NC}"
-if [[ "$DRY_RUN" == true ]]; then
-  echo -e "${BOLD}${GREEN}║  DRY-RUN completado — sin cambios        ║${NC}"
-else
-  echo -e "${BOLD}${GREEN}║  Bootstrap completado ✓                  ║${NC}"
-  echo -e "${BOLD}${GREEN}║  Siguiente paso: ./install.sh            ║${NC}"
-fi
-echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════╝${NC}"
-echo ""
+clear
+echo -e "${GREEN}${GHOST_DONE}${NC}"
+echo -e "\n${BOLD}  Todo listo${NC} — reinicia el shell con: ${CYAN}exec zsh${NC}\n"
