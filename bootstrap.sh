@@ -102,35 +102,107 @@ GHOST_HEADER=$(cat << 'GHOST'
 GHOST
 )
 
+# ─── Detección de distro ─────────────────────────────────────────────────────
+detect_distro() {
+  if [[ -f /etc/os-release ]]; then
+    source /etc/os-release
+    # Normalizar: mint y ubuntu comparten apt. Arch es arch.
+    case "$ID" in
+      ubuntu|linuxmint|pop)  DISTRO="debian" ;;
+      debian)                DISTRO="debian" ;;
+      arch|manjaro|endeavouros) DISTRO="arch" ;;
+      *)
+        # Fallback por ID_LIKE
+        case "${ID_LIKE:-}" in
+          *ubuntu*|*debian*) DISTRO="debian" ;;
+          *arch*)            DISTRO="arch"   ;;
+          *)
+            error "Distro no soportada: $ID — soportadas: Ubuntu, Mint, Arch/Manjaro"
+            exit 1 ;;
+        esac ;;
+    esac
+    DISTRO_NAME="${PRETTY_NAME:-$ID}"
+  else
+    error "No se encontró /etc/os-release"
+    exit 1
+  fi
+}
+
+detect_distro
+
+# Actualizar header con la distro detectada
+GHOST_HEADER=$(echo "$GHOST_HEADER" | sed "s/Ubuntu 26.04 LTS/$DISTRO_NAME/")
+
 # ─── Instalar gum si no está ─────────────────────────────────────────────────
 ensure_gum() {
   if has gum; then return; fi
 
   echo -e "${YELLOW}Instalando gum (TUI engine)...${NC}"
   if [[ "$DRY_RUN" == true ]]; then
-    info "[DRY] instalaría gum via apt"
+    info "[DRY] instalaría gum"
     return
   fi
 
-  if [[ ! -f /etc/apt/sources.list.d/charm.list ]]; then
-    sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://repo.charm.sh/apt/gpg.key \
-      | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
-      | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
-    sudo apt-get update -qq
-  fi
-  sudo apt-get install -y gum
+  case "$DISTRO" in
+    debian)
+      if [[ ! -f /etc/apt/sources.list.d/charm.list ]]; then
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://repo.charm.sh/apt/gpg.key \
+          | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+          | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
+        sudo apt-get update -qq
+      fi
+      sudo apt-get install -y gum ;;
+    arch)
+      # gum está en AUR, usar yay/paru o instalar binario
+      if has yay;  then yay -S --noconfirm gum
+      elif has paru; then paru -S --noconfirm gum
+      else
+        # Fallback: binario directo desde GitHub releases
+        local ver
+        ver=$(curl -s https://api.github.com/repos/charmbracelet/gum/releases/latest \
+          | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+        curl -sLo /tmp/gum.tar.gz \
+          "https://github.com/charmbracelet/gum/releases/latest/download/gum_${ver}_Linux_x86_64.tar.gz"
+        tar -xzf /tmp/gum.tar.gz -C /tmp
+        sudo mv /tmp/gum /usr/local/bin/gum
+        rm -f /tmp/gum.tar.gz
+      fi ;;
+  esac
   ok "gum instalado"
 }
 
 # ─── Helpers de instalación ──────────────────────────────────────────────────
-apt_install() {
+
+# Instala con el gestor nativo según distro
+pkg_install() {
+  local pkg_debian="$1"
+  local pkg_arch="${2:-$1}"   # si no se pasa, usa el mismo nombre
+
+  case "$DISTRO" in
+    debian)
+      if dpkg -s "$pkg_debian" &>/dev/null 2>&1; then skip "$pkg_debian"; return; fi
+      info "apt: $pkg_debian"
+      run sudo apt-get install -y "$pkg_debian"
+      ok "$pkg_debian" ;;
+    arch)
+      if pacman -Q "$pkg_arch" &>/dev/null 2>&1; then skip "$pkg_arch"; return; fi
+      info "pacman: $pkg_arch"
+      run sudo pacman -S --noconfirm --needed "$pkg_arch"
+      ok "$pkg_arch" ;;
+  esac
+}
+
+# Instala desde AUR (solo Arch)
+aur_install() {
   local pkg="$1"
-  if dpkg -s "$pkg" &>/dev/null 2>&1; then skip "$pkg"; return; fi
-  info "apt: $pkg"
-  run sudo apt-get install -y "$pkg"
-  ok "$pkg"
+  [[ "$DISTRO" != "arch" ]] && return
+  if pacman -Q "$pkg" &>/dev/null 2>&1; then skip "aur: $pkg"; return; fi
+  if has yay;       then run yay  -S --noconfirm "$pkg"
+  elif has paru;    then run paru -S --noconfirm "$pkg"
+  else warn "Sin helper AUR (yay/paru). Instalar manualmente: $pkg"; return; fi
+  ok "aur: $pkg"
 }
 
 brew_install() {
@@ -143,6 +215,13 @@ brew_install() {
 
 snap_install() {
   local pkg="$1"; shift; local flags="${*:-}"
+  # Snap no existe en Arch por defecto
+  if [[ "$DISTRO" == "arch" ]]; then
+    if ! has snap; then
+      warn "snap no disponible en Arch. Instalar $pkg manualmente."
+      return
+    fi
+  fi
   if snap list "$pkg" &>/dev/null 2>&1; then skip "snap: $pkg"; return; fi
   info "snap: $pkg $flags"
   run sudo snap install "$pkg" $flags
@@ -167,65 +246,180 @@ npm_global_install() {
 
 # ─── Bloques de instalación ──────────────────────────────────────────────────
 
-install_apt() {
-  section "APT — Paquetes del sistema"
-  run sudo apt-get update -qq
+install_system() {
+  section "Paquetes del sistema — $DISTRO_NAME"
 
-  local pkgs=(
-    build-essential curl wget git make pkg-config ca-certificates
-    software-properties-common apt-transport-https gnupg lsb-release
-    zsh tmux screen
-    bat fd-find fzf ripgrep lsd jq tree ncdu htop btop bpytop nvtop
-    fastfetch chafa cmatrix hexyl hyperfine tokei glow visidata bmon
-    git-delta vim
-    fonts-firacode fonts-hack fonts-jetbrains-mono
-    gcc golang default-jdk maven ruby3.3-dev
-    python3.13-venv pipx
-    autoconf libssl-dev libfontconfig1-dev libpam0g-dev
-    libx11-xcb-dev libxcb-composite0-dev libxcb-image0-dev
-    libxcb-keysyms1-dev libxcb-randr0-dev libxcb-util-dev
-    libxcb-xinerama0-dev libxcb-xkb-dev libxcb-xrm-dev libxcb1-dev
-    libxdo-dev libxkbcommon-dev libxkbcommon-x11-dev
-    libev-dev libasound2-dev libjpeg-dev libgif-dev libfuse2t64
-    docker-buildx-plugin docker-compose-plugin docker.io
-    ffmpeg mpv vlc imagemagick obs-studio
-    inkscape blender flameshot peek scrot
-    thunar xfce4 xfce4-goodies
-    i3 suckless-tools arandr
-    ranger zoxide entr socat nmap openssh-server
-    poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa
-    graphviz httpie awscli
-    language-pack-es hunspell-es wspanish
-    nvidia-cuda-toolkit
-    texlive-full
-    gparted ncurses-base xournal xournalpp audacity musescore
-    bc btrfs-progs efibootmgr evtest xinput libimage-exiftool-perl
-  )
+  case "$DISTRO" in
+    debian) run sudo apt-get update -qq ;;
+    arch)   run sudo pacman -Sy ;;
+  esac
 
-  for pkg in "${pkgs[@]}"; do apt_install "$pkg"; done
+  # Formato: pkg_install "nombre-debian" "nombre-arch"
+  # Si nombre es igual en ambas distros solo poner uno
+  pkg_install build-essential        base-devel
+  pkg_install curl
+  pkg_install wget
+  pkg_install git
+  pkg_install make
+  pkg_install pkg-config             pkgconf
+  pkg_install ca-certificates
+  pkg_install gnupg                  gnupg
+  pkg_install zsh
+  pkg_install tmux
+  pkg_install screen
+  pkg_install bat
+  pkg_install fd-find                fd
+  pkg_install fzf
+  pkg_install ripgrep
+  pkg_install lsd
+  pkg_install jq
+  pkg_install tree
+  pkg_install ncdu
+  pkg_install htop
+  pkg_install btop
+  pkg_install nvtop
+  pkg_install fastfetch
+  pkg_install chafa
+  pkg_install cmatrix
+  pkg_install hexyl
+  pkg_install hyperfine
+  pkg_install tokei
+  pkg_install vim
+  pkg_install git-delta              git-delta
+  pkg_install fonts-firacode         ttf-fira-code
+  pkg_install fonts-hack             ttf-hack
+  pkg_install fonts-jetbrains-mono   ttf-jetbrains-mono
+  pkg_install gcc
+  pkg_install golang                 go
+  pkg_install default-jdk            jdk-openjdk
+  pkg_install maven
+  pkg_install ruby3.3-dev            ruby
+  pkg_install pipx                   python-pipx
+  pkg_install autoconf
+  pkg_install libssl-dev             openssl
+  pkg_install libfontconfig1-dev     fontconfig
+  pkg_install libpam0g-dev           pam
+  pkg_install libev-dev              libev
+  pkg_install libasound2-dev         alsa-lib
+  pkg_install libjpeg-dev            libjpeg-turbo
+  pkg_install libgif-dev             giflib
+  pkg_install libfuse2t64            fuse2
+  pkg_install libxdo-dev             xdotool
+  pkg_install libxkbcommon-dev       libxkbcommon
+  pkg_install libxkbcommon-x11-dev   libxkbcommon-x11
+  # Docker
+  pkg_install docker.io              docker
+  pkg_install docker-compose-plugin  docker-compose
+  # Multimedia
+  pkg_install ffmpeg
+  pkg_install mpv
+  pkg_install vlc
+  pkg_install imagemagick
+  pkg_install obs-studio
+  # GUI
+  pkg_install inkscape
+  pkg_install blender
+  pkg_install flameshot
+  pkg_install scrot
+  pkg_install thunar
+  pkg_install xfce4
+  pkg_install xfce4-goodies
+  # i3
+  pkg_install i3
+  pkg_install suckless-tools         dmenu
+  pkg_install arandr
+  # Utilidades
+  pkg_install ranger
+  pkg_install zoxide
+  pkg_install entr
+  pkg_install socat
+  pkg_install nmap
+  pkg_install openssh-server         openssh
+  pkg_install graphviz
+  pkg_install awscli                 aws-cli
+  pkg_install gparted
+  pkg_install xournal
+  pkg_install xournalpp
+  pkg_install audacity
+  pkg_install musescore              musescore3
+  pkg_install bc
+  pkg_install tesseract-ocr          tesseract
+  pkg_install tesseract-ocr-eng      tesseract-data-eng
+  pkg_install tesseract-ocr-spa      tesseract-data-spa
+  pkg_install poppler-utils          poppler
+  pkg_install libimage-exiftool-perl perl-image-exiftool
+  pkg_install nvidia-cuda-toolkit    cuda
+  pkg_install texlive-full           texlive-most
 
-  # VS Code
-  if ! has code; then
-    info "Instalando VS Code..."
-    run wget -qO- https://packages.microsoft.com/keys/microsoft.asc \
-      | gpg --dearmor \
-      | sudo tee /etc/apt/keyrings/packages.microsoft.gpg > /dev/null
-    run echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" \
-      | sudo tee /etc/apt/sources.list.d/vscode.list
-    run sudo apt-get update -qq && sudo apt-get install -y code
-    ok "VS Code"
-  else skip "VS Code"; fi
+  # Paquetes solo Debian/Ubuntu/Mint
+  if [[ "$DISTRO" == "debian" ]]; then
+    pkg_install software-properties-common
+    pkg_install apt-transport-https
+    pkg_install lsb-release
+    pkg_install python3.13-venv
+    pkg_install hunspell-es
+    pkg_install language-pack-es
+    pkg_install bpytop
+    pkg_install glow
+    pkg_install visidata
+    pkg_install bmon
+    pkg_install httpie
+    pkg_install efibootmgr
+    pkg_install evtest
+    pkg_install xinput
+    pkg_install btrfs-progs
+    pkg_install ncurses-base
+    pkg_install peek
 
-  # GitHub CLI
-  if ! has gh; then
-    info "Instalando GitHub CLI..."
-    run curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-    run echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      | sudo tee /etc/apt/sources.list.d/github-cli.list
-    run sudo apt-get update -qq && sudo apt-get install -y gh
-    ok "GitHub CLI"
-  else skip "GitHub CLI"; fi
+    # VS Code
+    if ! has code; then
+      info "Instalando VS Code..."
+      run wget -qO- https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor \
+        | sudo tee /etc/apt/keyrings/packages.microsoft.gpg > /dev/null
+      run echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" \
+        | sudo tee /etc/apt/sources.list.d/vscode.list
+      run sudo apt-get update -qq && sudo apt-get install -y code
+      ok "VS Code"
+    else skip "VS Code"; fi
+
+    # GitHub CLI
+    if ! has gh; then
+      info "Instalando GitHub CLI..."
+      run curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+      run echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | sudo tee /etc/apt/sources.list.d/github-cli.list
+      run sudo apt-get update -qq && sudo apt-get install -y gh
+      ok "GitHub CLI"
+    else skip "GitHub CLI"; fi
+  fi
+
+  # Paquetes solo Arch
+  if [[ "$DISTRO" == "arch" ]]; then
+    pkg_install base-devel            # para compilar AUR
+    pkg_install hunspell-es_es        hunspell-es_es
+    pkg_install python-bpytop         python-bpytop  2>/dev/null || aur_install bpytop
+    pkg_install glow
+    pkg_install visidata
+    pkg_install bmon
+    pkg_install efibootmgr
+    pkg_install xorg-xinput           xorg-xinput
+    pkg_install btrfs-progs
+    pkg_install ncurses
+    # VS Code desde AUR
+    if ! has code; then aur_install visual-studio-code-bin; fi
+    # gh desde repos oficiales en Arch
+    pkg_install github-cli            github-cli
+
+    # Instalar yay si no hay helper AUR
+    if ! has yay && ! has paru; then
+      info "Instalando yay (AUR helper)..."
+      run git clone https://aur.archlinux.org/yay.git /tmp/yay
+      run cd /tmp/yay && makepkg -si --noconfirm
+      ok "yay"
+    fi
+  fi
 
   warn "Instalar manualmente: AnyDesk, Cursor, DBeaver CE"
 }
@@ -354,23 +548,23 @@ install_ai() {
 
 # ─── Mapa de secciones ───────────────────────────────────────────────────────
 declare -A SECTION_LABELS=(
-  ["apt"]="APT  — Sistema, CLI, Docker, Nvidia, LaTeX, fuentes"
-  ["brew"]="Brew — Homebrew + node, gh, ripgrep, python@3.14"
-  ["snap"]="Snap — Ghostty, Firefox, Spotify, Telegram, OnlyOffice"
-  ["zsh"]="Zsh  — Oh My Zsh + plugins autosuggestions/syntax"
-  ["node"]="Node — NVM + v22 + v26 + npm globals (openclaw)"
-  ["bun"]="Bun  — Bun runtime"
-  ["rust"]="Rust — rustup + rust-analyzer"
-  ["python"]="Python — uv + pip (torch, langchain, opencv...)"
-  ["ai"]="AI   — Ollama + avisos Kiro/Claude/LMStudio"
+  ["system"]="Sistema — CLI, Docker, Nvidia, LaTeX, fuentes ($DISTRO_NAME)"
+  ["brew"]="Brew    — Homebrew + node, gh, ripgrep, python@3.14"
+  ["snap"]="Snap    — Ghostty, Firefox, Spotify, Telegram, OnlyOffice"
+  ["zsh"]="Zsh     — Oh My Zsh + plugins autosuggestions/syntax"
+  ["node"]="Node    — NVM + v22 + v26 + npm globals (openclaw)"
+  ["bun"]="Bun     — Bun runtime"
+  ["rust"]="Rust    — rustup + rust-analyzer"
+  ["python"]="Python  — uv + pip (torch, langchain, opencv...)"
+  ["ai"]="AI      — Ollama + avisos Kiro/Claude/LMStudio"
 )
 
-SECTION_ORDER=(apt brew snap zsh node bun rust python ai)
+SECTION_ORDER=(system brew snap zsh node bun rust python ai)
 
 run_section() {
-  echo -e "$GHOST_THINKING"
+  echo -e "${MAGENTA}${GHOST_THINKING}${NC}"
   case "$1" in
-    apt)    install_apt    ;;
+    system) install_system ;;
     brew)   install_brew   ;;
     snap)   install_snap   ;;
     zsh)    install_zsh    ;;
