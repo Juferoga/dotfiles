@@ -29,7 +29,7 @@ GHOST
 )
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-FEDORA_VERSION="42"
+FEDORA_VERSION="44"
 FEDORA_ISO="Fedora-Workstation-Live-x86_64-${FEDORA_VERSION}-1.1.iso"
 FEDORA_URL="https://download.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_VERSION}/Workstation/x86_64/iso/${FEDORA_ISO}"
 FEDORA_CHECKSUM_URL="https://download.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_VERSION}/Workstation/x86_64/iso/Fedora-Workstation-${FEDORA_VERSION}-1.1-x86_64-CHECKSUM"
